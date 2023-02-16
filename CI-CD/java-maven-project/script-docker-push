@@ -1,0 +1,161 @@
+image_push() {
+  echo "********** IMAGE PUSH STARTED ********************"
+  COMPLETE_IMAGE_PATH=$REGISTRY_HOST/$REGISTRY_REPO/${IMAGE_NAME}:${IMAGE_TAG}
+  docker tag ${IMAGE_NAME}:${IMAGE_TAG} $COMPLETE_IMAGE_PATH
+
+  docker push $COMPLETE_IMAGE_PATH  
+  echo "pushed $COMPLETE_IMAGE_PATH"
+  echo "********** IMAGE PUSH FINISHED ********************"
+}
+
+timestamp=$(date +%d-%b-%y_%H-%M-%S)
+
+if [ "$OMIT_FLOW_TAG" = "true" ]
+then
+   ImageTag=$IMAGE_TAG
+   echo "\$OMIT_FLOW_TAG is not set to true, therefore not appending flow tag."
+else
+  if [ -z "$IMAGE_TAG" ]
+  then
+      echo "\$IMAGE_TAG is empty. Updating CommitId as Tag"
+      ImageTag="flow-$COMMIT_ID-$timestamp"
+
+   elif [ -n "$IMAGE_TAG" ] && [ "$IMAGE_TAG" = "$COMMIT_ID"  ]
+   then
+      ImageTag="flow-$COMMIT_ID-$timestamp"
+   else
+      ImageTag="$IMAGE_TAG-flow-$COMMIT_ID-$timestamp"
+   fi
+fi
+
+export IMAGE_TAG=$ImageTag
+if [ -z "$IMAGE_TAG" ]; then
+   echo "Image tag can not be empty. Try providing IMAGE_TAG or set OMIT_FLOW_TAG to false"
+   exit 1
+fi
+
+set -e;
+HTTP_RESPONSE=$(curl --silent --write-out "HTTPSTATUS:%{http_code}" -X POST   "http://$FLOW_ORC_ENDPOINT/v1/project/${FLOW_PROJECT_NAME}/deploy-candidate/build-context"   -H 'Accept: */*'   -H 'Accept-Encoding: gzip, deflate'   -H 'Cache-Control: no-cache'   -H 'Connection: keep-alive'   -H 'Content-Type: application/json'    -H 'cache-control: no-cache'   -H 'Authorization: Basic '$FLOW_BASIC_AUTH''  -d '{
+"registry_id" : '$FLOW_REGISTRY_ID',
+"image_name" : "'$IMAGE_NAME'",
+"image_tag" : "'$IMAGE_TAG'"
+}
+')
+# extract the body
+HTTP_BODY=$(echo $HTTP_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
+
+# extract the status
+HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+
+# example using the status
+if [ ! $HTTP_STATUS -eq 200  ]; then
+  echo "Error [HTTP status: $HTTP_STATUS] "
+  echo "Response: $HTTP_BODY"
+  exit 1
+fi
+
+
+########### fetch push related info from respose ###########
+REGISTRY_HOST=`echo $HTTP_BODY | jq -r .registry_host`
+REGISTRY_USER=`echo $HTTP_BODY | jq -r .registry_user`
+REGISTRY_PASSWORD=`echo $HTTP_BODY | jq -r .registry_password`
+REGISTRY_REPO=`echo $HTTP_BODY | jq -r .registry_repo`
+EXIST_ALREADY=`echo $HTTP_BODY | jq -r .exist_already`
+DEPLOY_CANDIDATE_ID=`echo $HTTP_BODY | jq -r .dc_id`
+
+
+#########Validate for already existing release/feature candidate with same tag#############
+if [ $EXIST_ALREADY == true ]; then
+  echo "Warning: Duplicate entry, deploy candidate exist with same name/label, Ignoring image push"
+  produce_output DEPLOY_CANDIDATE_ID [$DEPLOY_CANDIDATE_ID]
+  exit 0;
+fi
+
+cd $REPO_NAME/$SUB_PATH;
+
+DOCKER_CMD="docker build --file ${DOCKERFILE_NAME}"
+
+mapSize=`echo $BUILD_ARGS | jq length`
+count=0
+while [ $count -lt $mapSize ];
+do
+    key=`echo $BUILD_ARGS | jq -c '.['$count']|[.key]'`
+    value=`echo $BUILD_ARGS | jq -c '.['$count']|[.value]'`
+    DOCKER_CMD="${DOCKER_CMD} --build-arg ${key}=${value} "
+    count=$((count+1))
+done
+
+mapSize=`echo $ADD_HOSTS | jq length`
+count=0
+while [ $count -lt $mapSize ];
+do
+    key=`echo $ADD_HOSTS | jq -c '.['$count']|[.key]'`
+    value=`echo $ADD_HOSTS | jq -c '.['$count']|[.value]'`
+    DOCKER_CMD="${DOCKER_CMD} --add-host ${key}:${value}"
+    count=$((count+1))
+done
+
+if [ ! $DOCKER_BUILD_TARGET = "NO_TARGET" ]; then
+  TARGET_CMD="--target ${DOCKER_BUILD_TARGET}"
+fi
+
+DOCKER_CMD="${DOCKER_CMD} ${TARGET_CMD} --tag ${IMAGE_NAME}:${IMAGE_TAG} ."
+DOCKER_CMD=$(echo $DOCKER_CMD | sed 's/[["]//g' | sed 's/[]]//g')
+DOCKER_CMD="${DOCKER_CMD} ${DOCKER_OPTS}"
+echo $DOCKER_CMD
+
+# Checking if docker daemmon is running
+while (! docker ps > /dev/null ) ; do
+  echo "Waiting for docker daemon to start ..."
+  sleep 1
+done
+
+$DOCKER_CMD
+
+docker login --username $REGISTRY_USER --password $REGISTRY_PASSWORD $REGISTRY_HOST
+
+image_push
+
+#Create the new Deploy Candidate Record and produce it as Output.
+HTTP_RESPONSE=$(curl --silent --write-out "HTTPSTATUS:%{http_code}" -X POST   "http://$FLOW_ORC_ENDPOINT/v1/project/${FLOW_PROJECT_NAME}/deploy-candidate"   -H 'Content-Type: application/json'   -H 'Postman-Token: 198df417-a133-4447-9bde-bd6ab765ce94'   -H 'cache-control: no-cache'   -H 'Authorization: Basic '$FLOW_BASIC_AUTH''  -d '{
+  "pipeline_run_id" : '$FLOW_BUILD_NUMBER',
+  "pipeline_id" :   '$FLOW_PIPELINE_ID',
+  "pipeline_name" : "'$FLOW_JOB_NAME'",
+  "source_repo" : "'$REPO_NAME'",
+  "source_repo_branch" : "'$BRANCH_NAME'",
+  "source_commit_id" : "'$COMMIT_ID'",
+  "name" :      "'$IMAGE_NAME'",
+  "image_ref" : "'$VALUES_IMAGE_REF'",
+  "project_name" :  "'$FLOW_PROJECT_NAME'",
+  "version" :     1,
+  "candidate_type" : "DEV",
+  "artifact_type" : "image",
+  "registry_id": '$FLOW_REGISTRY_ID',
+  "dc_meta" :   {
+    "image_name":  "'$IMAGE_NAME'",
+    "image_tag":   "'$IMAGE_TAG'",
+    "registry_id": '$FLOW_REGISTRY_ID'
+  },
+  "is_deployable" : false 
+}' )
+# extract the body
+HTTP_BODY=$(echo $HTTP_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
+
+# extract the status
+HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+
+# example using the status
+if [ ! $HTTP_STATUS -eq 201  ]; then
+  echo "Error [HTTP status: $HTTP_STATUS] "
+  echo "Response: $HTTP_BODY"
+  exit 1
+fi
+
+echo "Created Deploy candidate with ID"
+echo $HTTP_BODY
+echo $HTTP_RESPONSE;
+DEPLOY_CANDIDATE_ID=`echo $HTTP_BODY | jq -r .`
+produce_output DEPLOY_CANDIDATE_ID [$DEPLOY_CANDIDATE_ID]
+#brackets in bash invoke test command. so, overwriting the file with correct value incase it's not correctly populated using above produce_output function
+echo $DEPLOY_CANDIDATE_ID | awk '{print "["$0"]"}' > /location/DEPLOY_CANDIDATE_ID
+cat /location/DEPLOY_CANDIDATE_ID
