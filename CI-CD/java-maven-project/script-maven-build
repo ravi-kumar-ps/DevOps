@@ -1,0 +1,34 @@
+set -e
+ls -ltrah
+pwd
+cd sherlock-matrix/rpi/spark-jobs
+ls -ltrah
+pwd
+PWD=$(pwd)
+sudo apt-get install make -y
+#mvn clean
+#mvn compile
+PACKAGE_NAME=sherlock-rpi-sparkjobs
+pom=`head -n 1 ChangeLog`
+echo $pom
+export SRC_DIR=rpi/spark-jobs
+
+echo "Building : $PACKAGE_NAME..."
+echo "Version detected:" $pom
+echo $pom
+sed -i.bak -e "1,/<version>.*<\/version>/s/<version>.*<\/version>/<version>$pom<\/version>/" $PWD/pom.xml
+
+#mvn package -DskipTests -Dfindbugs.skip=true -Dscoverage.skip
+#mvn install -DskipTests -Dfindbugs.skip=true -Dscoverage.skip
+#make -f $PWD/Makefile make-deploy-pkgs
+
+mvn -f $PWD/pom.xml clean
+
+mvn -f $PWD/pom.xml compile
+
+#mvn -f $PWD/pom.xml source:jar package
+mvn -f $PWD/pom.xml source:jar package -DskipTests=true
+#mvn -X -e -f $PWD/pom.xml source:jar install
+ls -ltrah
+cd target
+ls -ltrah
