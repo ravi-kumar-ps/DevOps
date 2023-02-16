@@ -1,0 +1,45 @@
+#Git clone template 
+set -e
+git config --global user.email "flow@test.com"
+git config --global user.name "flow"
+git_clone_url="https://${token}@${git_source_url}/${org}/${repo_name}.git"
+
+#echo ${git_clone_url}
+# Replace this with generic clone which
+git clone $git_clone_url
+cd $repo_name
+
+if [  "$FLOW_EVENT_SOURCE" = ''  ] || [ "$primary_repo" = 'false' ] ; then
+ 	git checkout $git_clone_ref;
+ else
+ 	base_branch=`echo $FLOW_EVENT_SOURCE | jq -r .base_branch`
+ 	git_clone_ref=`echo $FLOW_EVENT_SOURCE | jq -r .commit_id`
+ 	merged=`echo $FLOW_EVENT_SOURCE | jq -r .merged`
+ 	echo $git_clone_ref
+	#Merge changes to base branch
+	git checkout $base_branch
+	echo merged: $merged
+	if [  "$merged" = 'false'  ]; then
+	    echo merge soure ref
+	    git fetch origin $git_clone_ref
+	    echo 'add commit' | git merge $git_clone_ref
+	fi
+ fi
+produce_output repo-name $repo_name
+produce_output org $org
+if [ $primary_repo == true ]; then  
+    if [  "$FLOW_EVENT_SOURCE" = ''  ]; then
+        produce_output branch-name $git_clone_ref
+        commit_id=$(git rev-parse HEAD)
+        produce_output commit-id $commit_id
+    else
+        branch_name=`echo $FLOW_EVENT_SOURCE | jq -r .source_branch`
+        produce_output branch-name $branch_name
+        produce_output commit-id $git_clone_ref
+    fi
+   
+else 
+    produce_output branch-name $git_clone_ref
+    commit_id=$(git rev-parse HEAD)
+    produce_output commit-id $commit_id
+fi
