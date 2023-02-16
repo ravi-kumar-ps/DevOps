@@ -1,0 +1,152 @@
+#!/bin/bash
+set -e
+# $FLOW_BASEDIR   :               /mnt/disks/build_infra/repos/dummy2-1104688/git-repo : Location where all your repos will be available
+# $FLOW_BUILD_NUMBER   :          1104688 : The current build number of the pipeline
+# $FLOW_BUILD_URL   :             http://flow.fkinternal.com/#/app/executions/build/search-data-spyder/1104688/graph : The URL where the results of this build can be found
+# $FLOW_CACHE_GOLANG   :          /mnt/disks/build_infra/artifacts/go : Cache path for go modules
+# $FLOW_CACHE_MAVEN   :           /mnt/disks/build_infra/artifacts/mvn : Path of the maven cache
+# $FLOW_EVENT_SOURCE   :          it will store repo meta data whenever triggered from PR
+# $FLOW_GIT_URL   :        For Git-based projects, this variable contains the Git url of the primary repo
+# $FLOW_INVOKER_EMAIL   :        lingaraj.bagali@flipkart.com : Email id of the user who triggered the build
+# $FLOW_INVOKER_NAME   :        lingaraj.bagali : Name of the user who triggered the build
+# $FLOW_NPM_CACHE   :             /mnt/disks/build_infra/artifacts/npm : npm artifact cache
+# $FLOW_PIPELINE_NAME   :        dummy2-1104688 : Name of the pipeline of this build
+# $FLOW_WORKSPACE   :             /mnt/disks/build_infra/repos/dummy2-1104688/git-repo : Absolute path of the workspace where the pipeline will be executed
+
+# REPO_DIR :                      $FLOW_BASEDIR/search-spyder
+# UNIQUE_DEB_IDENTIFIER :         $FLOW_BUILD_NUMBER
+# ARCHIVES_LOCATION :             $MODULE_DIR
+# DEBIAN_DIR :                    $MODULE_DIR/deb-templates/$REPOSVC_REPO_NAME/DEBIAN
+# DEB_FILES_COUNT :               1 
+# REPOSVC_APPKEY :                test
+# CHITRAGUPT_COMMAND :            TODO
+# IS_REPO_PUBLISH :             FALSE
+# REPOSVC_REPO_NAME :                  search-airflow
+
+# #<<< newly added >>>
+# MODULE_NAME : search-data
+# MODULE_DIR : $REPO_DIR/$MODULE_NAME 
+# REPOSVC_PACKAGE_NAME : $REPOSVC_REPO_NAME
+
+
+set -xv
+echo "######## PREPARING DEBIAN PACKAGE : START ########"
+
+
+POM_VERSION=$(head -1  "$MODULE_DIR"/ChangeLog)
+sed -i.bak -e "s/Version:.*/Version: $POM_VERSION/" "$DEBIAN_DIR"/control
+sed -i.bak -e "s/Package:.*/Package: $REPOSVC_PACKAGE_NAME/" "$DEBIAN_DIR"/control
+
+DEBIAN_DEPLOY_DIR="$MODULE_DIR"/deb-templates/$REPOSVC_PACKAGE_NAME/grid/1/$REPOSVC_PACKAGE_NAME
+DEBIAN_DEPLOY_JARS_DIR=$DEBIAN_DEPLOY_DIR/jars
+DEBIAN_DEPLOY_BIN_DIR=$DEBIAN_DEPLOY_DIR/bin
+
+
+rm -rf "$DEBIAN_DEPLOY_BIN_DIR" "$DEBIAN_DEPLOY_JARS_DIR" 
+mkdir -p "$DEBIAN_DEPLOY_BIN_DIR" "$DEBIAN_DEPLOY_JARS_DIR"  
+
+
+echo "@@@ JAR FILE SIZES @@@"
+du -sh "$MODULE_DIR"/target/*.jar
+
+echo "@@@ COPYING ALL JAR FILES TO DEBIAN DEPLOY JAR DIR $DEBIAN_DEPLOY_JARS_DIR @@@"
+#cp "$MODULE_DIR"/target/*.jar "$DEBIAN_DEPLOY_JARS_DIR"
+cp "$MODULE_DIR"/target/sherlock-search-ranking-sparkjobs-$POM_VERSION.jar "$DEBIAN_DEPLOY_JARS_DIR"
+# cp "$MODULE_DIR"/target/"$REPOSVC_PACKAGE_NAME"-"$POM_VERSION"-uber.jar "$DEBIAN_DEPLOY_JARS_DIR" # todo : remove hardcoded string
+# cp "$MODULE_DIR"/target/"$REPOSVC_PACKAGE_NAME"-"$POM_VERSION".jar "$DEBIAN_DEPLOY_JARS_DIR" # lb: removed "-sources.jar" and just kept ".jar" (searchdata-0.0.1028-uber.jar, searchdata-0.0.1028.jar)
+# cp -R "$MODULE_DIR"/src/main/airflow/ "$DEBIAN_DEPLOY_JARS_DIR" #lb : this is not present in backend jar makefile
+
+
+#chmod 0775 "$DEBIAN_DIR"/../etc/cron.d/"$REPOSVC_PACKAGE_NAME" 
+chmod 0775 "$DEBIAN_DIR"/../etc/default/"$REPOSVC_PACKAGE_NAME"
+chmod 0775 "$DEBIAN_DIR"/postrm
+chmod 0775 "$DEBIAN_DIR"/postinst
+# chmod 755 "$DEBIAN_DIR"/control
+chmod 0775 "$DEBIAN_DIR"/control #tofix : dpkg-deb: error: control directory has bad permissions 2755 (must be >=0755 and <=0775)
+
+echo "Debian Artifact Building : $REPOSVC_PACKAGE_NAME..."
+
+dpkg-deb -b "$MODULE_DIR"/deb-templates/"$REPOSVC_PACKAGE_NAME" "$REPOSVC_PACKAGE_NAME"-"$POM_VERSION".deb
+# Moving .deb file to MODULE_DIR
+mv "$REPOSVC_PACKAGE_NAME"-"$POM_VERSION".deb "$MODULE_DIR";
+echo "######## PREPARING DEBIAN PACKAGE : END ########"
+
+ls ${ARCHIVES_LOCATION} | wc #lb
+ls ${ARCHIVES_LOCATION} #lb
+realpath ${ARCHIVES_LOCATION}
+realpath .
+# find ${ARCHIVES_LOCATION} #lb
+
+count=$(ls ${ARCHIVES_LOCATION}|grep .deb$ | wc -l)
+echo $count
+if [ "$DEB_FILES_COUNT" != "$count" ]
+then 
+    echo "Desired number of Debian packages are not found!"
+    exit 1;
+fi 
+
+echo "list of files in ${ARCHIVES_LOCATION}:" 
+ls -l ${ARCHIVES_LOCATION}
+mkdir DEB_FILES
+for DEB_FILE in "${ARCHIVES_LOCATION}/"*.deb; 
+do
+      echo "@@@ DEB FILE NAME : $DEB_FILE @@@"
+      du -sh $DEB_FILE;
+      mv $DEB_FILE ${DEB_FILE%.*}-$UNIQUE_DEB_IDENTIFIER.deb
+      DEB_FILE=${DEB_FILE%.*}-$UNIQUE_DEB_IDENTIFIER.deb
+      cp ${DEB_FILE} DEB_FILES
+      realpath DEB_FILE
+      realpath DEB_FILES
+done 
+
+echo "list of debians generated"
+ls -l DEB_FILES
+cp -r DEB_FILES /tmp
+
+echo "######## PUBLISHING TO REPO : START ########"
+
+echo "@@@@ PWD `pwd`@@@@"
+
+if [ $IS_REPO_PUBLISH = TRUE ];
+then
+   echo "@@@@ CHITRAGUPTA START : CD TO $REPO_DIR BECAUSE chitragupt-cli USES GIT REMOTE COMMANDS @@@@"
+   cd $REPO_DIR
+   if [[ $CHITRAGUPT_COMMAND == *"create gate"* ]]; then
+       echo "chitragupt-cli $CHITRAGUPT_COMMAND "
+       CID=$(chitragupt-cli create gate --app-id "$APP_ID")
+   # elif [ "$CHITRAGUPT_COMMAND" = "create pr" ]; then 
+       # echo "chitragupt-cli $CHITRAGUPT_COMMAND $pr"
+       # CID=$(chitragupt-cli $CHITRAGUPT_COMMAND $pr)
+   else 
+      echo "Problem with chitragupt action. Exiting"
+      exit 1;
+   fi 
+   echo "@@@@ CHITRAGUPTA END : CD OUT BACK TO PREVIOUS DIR @@@@"
+   cd -
+   echo "chitragupt-cli $CHITRAGUPT_COMMAND"
+   echo "CID : $CID"
+   REPOSERVICE_CMD="reposervice --host 10.24.0.41 --port 8080 pubrepo --repo $REPOSVC_REPO_NAME --appkey $REPOSVC_APPKEY --cid=$CID "
+   for DEB_FILE in "DEB_FILES/"*.deb; 
+   do
+      REPOSERVICE_CMD="${REPOSERVICE_CMD} --debs ${DEB_FILE}"
+   done
+   echo "reposervice command: $REPOSERVICE_CMD"
+   REPO_SERVICE_URL=$(eval $REPOSERVICE_CMD)
+   echo $REPO_SERVICE_URL
+   REPO_SERVICE_URL=`echo $REPO_SERVICE_URL | sed -e 's/10.24.0.41:8080/10.24.0.247/g'`
+   produce_output REPO_SERVICE_URL $REPO_SERVICE_URL
+ 
+   
+   repoSvcRepoVersion="$(echo $REPO_SERVICE_URL | cut -d'/' -f 6)"
+   
+   echo "Done !"
+else 
+   produce_output DEPLOY_CANDIDATE_IDS nil
+   produce_output REPO_SERVICE_URL nil
+fi
+echo -e "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+echo -e "DEPLOY_CANDIDATE_IDS    = $DEPLOY_CANDIDATE_IDS"
+echo -e "REPO_SERVICE_URL        = $REPO_SERVICE_URL"
+echo -e "repoSvcRepoVersion      = $repoSvcRepoVersion"
+echo -e "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"
+set +xv
