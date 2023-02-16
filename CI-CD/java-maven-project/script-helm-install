@@ -1,0 +1,58 @@
+set -e
+
+env
+DEPLOY_STRATEGY_JSON=$(cat /tmp/deployment-strategy.json)
+echo ${DEPLOY_STRATEGY_JSON}
+if [  "$VALUES_FILE_PATH" = "-"  ]; then
+    VALUES_FILE_PATH=
+fi
+HTTP_RESPONSE=$(curl --silent --write-out "HTTPSTATUS:%{http_code}" -X --location --request POST ''$FLOW_ORC_ENDPOINT'/v1/release/install' --header 'Content-Type: application/json' --data-raw '{   
+    "value_params": '"$SET_PARAMS"', 
+    "release_name": "'$RELEASE_NAME'",    
+    "chart_path" : "'$CHART_PATH'",    
+    "namespace" : "'$NAMESPACE'",    
+    "values_file_path" : "'$VALUES_FILE_PATH'",    
+    "chart_name" : "'$CHART_NAME'",    
+    "static_deployment_candidate_ids" : '$STATIC_DEPLOYMENT_CANDIDATES',  
+    "dynamic_deployment_candidate_ids" : '$DYNAMIC_DEPLOYMENT_CANDIDATES',   
+    "cluster_context_id" : '$FLOW_CLUSTER_CONTEXT_ID',    
+    "registry_context_id" : '$FLOW_REGISTRY_ID', 
+    "env_id" : '$FLOW_ENV_ID',   
+    "pipeline_id": '$FLOW_PIPELINE_ID', 
+    "pipeline_name" : "'$FLOW_JOB_NAME'",    
+    "type": "helm", 
+    "app_id": "'$APP_ID'", 
+    "helm_chart_dc_id":'$HELM_CHART', 
+    "pipeline_run_id": '$FLOW_BUILD_NUMBER', 
+    "project_name":"'$FLOW_PROJECT_NAME'",
+    "deploy_strategy": '${DEPLOY_STRATEGY_JSON}'
+}')
+
+# extract the body
+HTTP_BODY=$(echo $HTTP_RESPONSE | sed -e 's/HTTPSTATUS\:.*//g')
+
+# extract the status
+HTTP_STATUS=$(echo $HTTP_RESPONSE | tr -d '\n' | sed -e 's/.*HTTPSTATUS://')
+
+# example using the status
+if [ ! $HTTP_STATUS -eq 200  ]; then
+  echo "Error [HTTP status: $HTTP_STATUS] "
+  echo "Response: $HTTP_BODY"
+  exit 1
+fi
+
+
+
+echo $HTTP_BODY
+namespace=`echo $HTTP_BODY | jq -r .namespace`
+produce_output NAMESPACE $namespace
+produce_output RELEASE $HTTP_BODY
+
+echo "updating the change tracker"
+echo $Deployment_Description
+curl -X POST http://10.47.1.253/changetracker/register/change -H 'Content-Type: application/json' -d '{"component" :"'$APP_ID'","dc": "'$RELEASE_NAME'","description" :"'$Deployment_Description'","user" : "'$FLOW_INVOKER_NAME'","change" : "'Deployment' started", "url": "'$FLOW_BUILD_URL'","team": "SearchRanking"}'
+
+
+
+
+
